@@ -11,9 +11,9 @@
 -_desc="AArch64 multi-platform"
 +_desc="AArch64, Qualcomm-only, with MGLRU + zram zstd/lz4 (Duet 5)"
  pkgver=7.3.3
- pkgrel=1
+ pkgrel=2
  arch=('aarch64')
-@@ -60,6 +60,23 @@
+@@ -60,6 +60,30 @@
    git apply ../0005-arm64-dts-rpi5-add-RP1-UART0-GPIO14-15-console.patch
  
    cat "${srcdir}/config" > ./.config
@@ -30,14 +30,21 @@
 +           ROCKCHIP SEATTLE TEGRA VEXPRESS XGENE; do
 +    scripts/config -d ARCH_$a
 +  done
++  # sched_ext: lets a BPF scheduler (scx_lavd from scx-scheds) take over at runtime.
++  # Needs BTF type info in vmlinux, which needs DWARF debug info at build time
++  # (stripped back out of modules and of the headers' vmlinux; .BTF survives).
++  scripts/config -d DEBUG_INFO_NONE -e DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
++    -d DEBUG_INFO_REDUCED -d DEBUG_INFO_SPLIT -e DEBUG_INFO_BTF -e DEBUG_INFO_BTF_MODULES \
++    -e BPF_JIT_ALWAYS_ON -e SCHED_CLASS_EXT
 +  make olddefconfig
-+  for o in LRU_GEN LRU_GEN_ENABLED ZRAM_BACKEND_ZSTD ZRAM_BACKEND_LZ4 ZRAM_MULTI_COMP ARCH_QCOM; do
++  for o in LRU_GEN LRU_GEN_ENABLED ZRAM_BACKEND_ZSTD ZRAM_BACKEND_LZ4 ZRAM_MULTI_COMP ARCH_QCOM \
++           DEBUG_INFO_BTF SCHED_CLASS_EXT; do
 +    grep -q "^CONFIG_$o=y" .config || { echo "config: CONFIG_$o did not stick" >&2; return 1; }
 +  done
  }
  
  build() {
-@@ -71,9 +88,8 @@
+@@ -71,9 +95,8 @@
  
    # build!
    unset LDFLAGS
@@ -48,7 +55,7 @@
  }
  
  _package() {
-@@ -85,8 +101,7 @@
+@@ -85,8 +108,7 @@
      'raspberry-pi5-armstub: NEEDED to boot RPi5 with linux-aarch64 mainline kernel'
      'wireless-regdb: to set the correct wireless channels of your country'
    )
@@ -58,7 +65,7 @@
    install=${pkgname}.install
  
    cd $_srcname
-@@ -94,8 +109,7 @@
+@@ -94,8 +116,7 @@
    local modulesdir="$pkgdir/usr/lib/modules/$kernver"
  
    echo "Installing boot image and dtbs..."
@@ -68,7 +75,7 @@
  
    echo "Installing modules..."
    make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 DEPMOD=/doesnt/exist modules_install
-@@ -111,6 +125,7 @@
+@@ -111,6 +132,7 @@
  
    # install mkinitcpio preset file
    sed "${_subst}" ../linux.preset |
@@ -76,7 +83,7 @@
      install -Dm644 /dev/stdin "${pkgdir}/etc/mkinitcpio.d/${pkgbase}.preset"
  
    # rather than use another hook (90-linux.hook) rely on mkinitcpio's 90-mkinitcpio-install.hook
-@@ -121,8 +136,7 @@
+@@ -121,8 +143,7 @@
  
  _package-headers() {
    pkgdesc="Header files and scripts for building modules for linux kernel - ${_desc}"
@@ -86,7 +93,17 @@
  
    cd $_srcname
    local builddir="$pkgdir/usr/lib/modules/$(<version)/build"
-@@ -238,7 +252,7 @@
+@@ -193,6 +214,9 @@
+     esac
+   done < <(find "$builddir" -type f -perm -u+x ! -name vmlinux -print0)
+ 
++  echo "Stripping vmlinux (debug info only; .BTF stays for sched_ext/BPF)..."
++  strip -v $STRIP_STATIC "$builddir/vmlinux"
++
+   echo "Adding symlink..."
+   mkdir -p "$pkgdir/usr/src"
+   ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+@@ -238,7 +262,7 @@
    cp vmlinux.kpart "${pkgdir}/boot"
  }
  

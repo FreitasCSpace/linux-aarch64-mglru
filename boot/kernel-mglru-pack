@@ -37,6 +37,10 @@ if [[ -f $CMDLINE_FILE ]]; then
 else
   cmdline+=" rootwait rw"
 fi
+# Quieter console than the stock kernel (printing every boot message to the
+# framebuffer slows boot). KERN-A keeps the shared file's verbose level, so the
+# fallback kernel is still the one to debug boot problems with.
+cmdline=$(sed -E 's/(^| )loglevel=[0-9]+//g; s/^ +//' <<<"$cmdline")" loglevel=3"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

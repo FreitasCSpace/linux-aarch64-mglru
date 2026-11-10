@@ -17,4 +17,11 @@ rm -rf "$out.upstream"
 patch --no-backup-if-mismatch -d "$out" -p0 < "$here/mglru.patch" >&2
 cp "$here/linux-aarch64-mglru.install" "$out/"
 
+# localrel > 0 bumps pkgrel to "<upstream>.<localrel>" so a change made only here
+# (config, patch) still reaches pacman as an upgrade. Reset to 0 when upstream bumps.
+localrel=$(<"$here/localrel")
+if (( localrel > 0 )); then
+  sed -i "s/^pkgrel=\([0-9]*\)$/pkgrel=\1.$localrel/" "$out/PKGBUILD"
+fi
+
 ( cd "$out" && source PKGBUILD && echo "${pkgver}-${pkgrel}" )
