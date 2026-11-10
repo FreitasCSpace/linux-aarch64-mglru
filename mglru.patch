@@ -97,7 +97,16 @@
  
    cd $_srcname
    local builddir="$pkgdir/usr/lib/modules/$(<version)/build"
-@@ -193,6 +218,9 @@
+@@ -133,6 +158,8 @@
+   install -Dt "$builddir/kernel" -m644 kernel/Makefile
+   install -Dt "$builddir/arch/arm64" -m644 arch/arm64/Makefile
+   cp -t "$builddir" -a scripts
++  # out-of-tree modules (DKMS) need it to generate their BTF (DEBUG_INFO_BTF_MODULES)
++  install -Dt "$builddir/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids
+ 
+   # add xfs and shmem for aufs building
+   mkdir -p "$builddir"/{fs/xfs,mm}
+@@ -193,6 +220,9 @@
      esac
    done < <(find "$builddir" -type f -perm -u+x ! -name vmlinux -print0)
  
@@ -107,7 +116,7 @@
    echo "Adding symlink..."
    mkdir -p "$pkgdir/usr/src"
    ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
-@@ -238,7 +266,7 @@
+@@ -238,7 +268,7 @@
    cp vmlinux.kpart "${pkgdir}/boot"
  }
  
