@@ -1,0 +1,4 @@
+# MGLRU thrashing protection (ChromeOS value): keep the working set of the last
+# second resident; under extreme pressure OOM-kill instead of freezing. Silently
+# absent on kernels without MGLRU.
+w- /sys/kernel/mm/lru_gen/min_ttl_ms - - - - 1000

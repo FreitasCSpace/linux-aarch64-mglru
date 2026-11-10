@@ -1,0 +1,7 @@
+[Unit]
+Description=Mark the MGLRU kernel (KERN-B) as good after a healthy boot
+ConditionKernelVersion=*-mglru-*
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kernel-mglru-mark-good

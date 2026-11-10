@@ -1,0 +1,10 @@
+#!/bin/bash
+# Run on a boot of the MGLRU kernel once it is confirmed working: makes KERN-B
+# permanent (successful) and keeps KERN-A, the stock kernel, as the lower-priority fallback.
+set -euo pipefail
+DISK=/dev/mmcblk1
+[[ $(uname -r) == *-mglru-* ]] || { echo "not running the MGLRU kernel ($(uname -r)); nothing marked" >&2; exit 1; }
+cgpt add -i 3 -S 1 -T 0 -P 15 "$DISK"
+cgpt add -i 1 -P 10 "$DISK"
+cgpt show -i 1 "$DISK" | tail -n +2 | head -3; cgpt show -i 3 "$DISK" | tail -n +2 | head -3
+echo "KERN-B (MGLRU) marked good; KERN-A (stock) is the fallback."

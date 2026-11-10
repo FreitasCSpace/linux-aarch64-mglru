@@ -1,0 +1,14 @@
+#!/bin/bash
+# mkinitcpio post hook, runs after 90-omarchy-chromebook.
+# - The MGLRU kernel's own initramfs: repack KERN-B (as a one-try trial).
+# - Any other build (a stock kernel update rewrote KERN-A with priority 15):
+#   if KERN-B is the established kernel or a pending trial, push KERN-A back below it.
+initramfs=$2
+if [[ $initramfs == /boot/initramfs-linux-mglru.img ]]; then
+  exec /usr/local/bin/kernel-mglru-pack /boot/Image-mglru "$initramfs"
+fi
+if [[ $(cgpt show -i 3 -l /dev/mmcblk1 2>/dev/null) == KERN-B ]] &&
+   { [[ $(cgpt show -i 3 -S /dev/mmcblk1) == 1 ]] || [[ $(cgpt show -i 3 -T /dev/mmcblk1) -gt 0 ]]; }; then
+  cgpt add -i 1 -P 10 /dev/mmcblk1
+fi
+exit 0

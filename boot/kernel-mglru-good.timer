@@ -1,0 +1,9 @@
+[Unit]
+Description=Mark the MGLRU kernel good 3 minutes after boot
+ConditionKernelVersion=*-mglru-*
+
+[Timer]
+OnBootSec=3min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,93 @@
+name: build
+
+# Daily: if Arch Linux ARM published a new core/linux-aarch64, rebuild it with
+# mglru.patch and publish it to the signed pacman repo (release "repo").
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if this version is already released
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      build: ${{ steps.v.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(scripts/derive.sh build)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "${{ inputs.force }}" == true ]] || ! gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "build=true" >> "$GITHUB_OUTPUT"; echo "Building $version"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"; echo "$version already released"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    container: menci/archlinuxarm:base-devel
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Toolchain
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinuxarm
+          pacman -Syu --noconfirm --needed base-devel git patch xmlto docbook-xsl kmod inetutils bc \
+            uboot-tools vboot-utils dtc python pahole cpio perl github-cli gnupg
+      - uses: actions/checkout@v4
+      - name: Sources
+        run: |
+          git config --global --add safe.directory "$PWD"
+          got=$(scripts/derive.sh build)
+          [[ $got == "$VERSION" ]] || { echo "upstream moved to $got during the run" >&2; exit 1; }
+      - name: Build
+        run: |
+          useradd -m builder
+          chown -R builder build
+          su builder -c "cd build && MAKEFLAGS=-j$(nproc) makepkg -f --noconfirm --nodeps"
+      - name: Sign and index
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          key=$(cat keys/fingerprint)
+          echo "$SIGNING_KEY" | gpg --batch --import
+          mkdir out && cp build/*.pkg.tar.* out/ && cd out
+          for p in *.pkg.tar.*; do gpg --batch --yes --detach-sign --no-armor -u "$key" "$p"; done
+          repo-add -s -k "$key" mglru.db.tar.gz *.pkg.tar.xz
+          for f in mglru.db mglru.files; do rm "$f" && cp "$f.tar.gz" "$f"; rm "$f.sig" && cp "$f.tar.gz.sig" "$f.sig"; done
+          ls -la
+      - name: Publish
+        run: |
+          cd out
+          R=$GITHUB_REPOSITORY
+          gh release create "v$VERSION" -R "$R" --title "linux-aarch64-mglru $VERSION" \
+            --notes "Arch Linux ARM linux-aarch64 $VERSION + MGLRU, zram zstd/lz4/multi-comp, Qualcomm-only." \
+            *.pkg.tar.* 2>/dev/null || gh release upload "v$VERSION" -R "$R" --clobber *.pkg.tar.*
+          gh release view repo -R "$R" >/dev/null 2>&1 || \
+            gh release create repo -R "$R" --title "pacman repo" --notes "Server = https://github.com/$R/releases/download/repo" --latest=false
+          gh release upload repo -R "$R" --clobber *
+          # Drop packages of older versions from the repo release.
+          for a in $(gh release view repo -R "$R" --json assets -q '.assets[].name'); do
+            [[ -e $a ]] || gh release delete-asset repo "$a" -R "$R" -y
+          done

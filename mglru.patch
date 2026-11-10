@@ -1,0 +1,97 @@
+--- PKGBUILD
++++ PKGBUILD
+@@ -4,10 +4,10 @@
+ 
+ buildarch=8
+ 
+-pkgbase=linux-aarch64
++pkgbase=linux-aarch64-mglru
+ _srcname=linux-7.3
+ _kernelname=${pkgbase#linux}
+-_desc="AArch64 multi-platform"
++_desc="AArch64, Qualcomm-only, with MGLRU + zram zstd/lz4 (Duet 5)"
+ pkgver=7.3.3
+ pkgrel=1
+ arch=('aarch64')
+@@ -60,6 +60,23 @@
+   git apply ../0005-arm64-dts-rpi5-add-RP1-UART0-GPIO14-15-console.patch
+ 
+   cat "${srcdir}/config" > ./.config
++
++  # --- Duet 5 (SC7180) changes on top of Arch Linux ARM's config ---
++  # MGLRU: multi-gen LRU page reclaim (ChromeOS's fix for thrashing on low-RAM Chromebooks)
++  scripts/config -e LRU_GEN -e LRU_GEN_ENABLED -d LRU_GEN_STATS
++  # zram: zstd (better ratio) and lz4 (faster) backends, zstd default, recompression of idle pages
++  scripts/config -d ZRAM_BACKEND_FORCE_LZO -e ZRAM_BACKEND_ZSTD -e ZRAM_BACKEND_LZ4 \
++    -e ZRAM_MULTI_COMP -e ZRAM_TRACK_ENTRY_ACTIME -d ZRAM_DEF_COMP_LZORLE -e ZRAM_DEF_COMP_ZSTD \
++    --set-str ZRAM_DEF_COMP zstd
++  # Only Qualcomm hardware matters here: drop the other SoC platforms (shorter build)
++  for a in SUNXI APPLE BCM BCM2835 BCMBCA HISI MEDIATEK MESON MVEBU NXP LAYERSCAPE MXC \
++           ROCKCHIP SEATTLE TEGRA VEXPRESS XGENE; do
++    scripts/config -d ARCH_$a
++  done
++  make olddefconfig
++  for o in LRU_GEN LRU_GEN_ENABLED ZRAM_BACKEND_ZSTD ZRAM_BACKEND_LZ4 ZRAM_MULTI_COMP ARCH_QCOM; do
++    grep -q "^CONFIG_$o=y" .config || { echo "config: CONFIG_$o did not stick" >&2; return 1; }
++  done
+ }
+ 
+ build() {
+@@ -71,9 +88,8 @@
+ 
+   # build!
+   unset LDFLAGS
+-  make ${MAKEFLAGS} Image Image.gz modules
++  make ${MAKEFLAGS} Image modules
+   # Generate device tree blobs with symbols to support applying device tree overlays in U-Boot
+-  make ${MAKEFLAGS} DTC_FLAGS="-@" dtbs
+ }
+ 
+ _package() {
+@@ -85,8 +101,7 @@
+     'raspberry-pi5-armstub: NEEDED to boot RPi5 with linux-aarch64 mainline kernel'
+     'wireless-regdb: to set the correct wireless channels of your country'
+   )
+-  provides=("linux=${pkgver}" "KSMBD-MODULE" "WIREGUARD-MODULE")
+-  conflicts=('linux')
++  provides=("KSMBD-MODULE" "WIREGUARD-MODULE")
+   install=${pkgname}.install
+ 
+   cd $_srcname
+@@ -94,8 +109,7 @@
+   local modulesdir="$pkgdir/usr/lib/modules/$kernver"
+ 
+   echo "Installing boot image and dtbs..."
+-  install -Dm644 arch/arm64/boot/Image{,.gz} -t "${pkgdir}/boot"
+-  make INSTALL_DTBS_PATH="${pkgdir}/boot/dtbs" dtbs_install
++  install -Dm644 arch/arm64/boot/Image "${pkgdir}/boot/Image-mglru"
+ 
+   echo "Installing modules..."
+   make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 DEPMOD=/doesnt/exist modules_install
+@@ -111,6 +125,7 @@
+ 
+   # install mkinitcpio preset file
+   sed "${_subst}" ../linux.preset |
++    sed 's|/boot/initramfs-linux|/boot/initramfs-linux-mglru|g; s|^PRESETS=.*|PRESETS=(\x27default\x27)|' |
+     install -Dm644 /dev/stdin "${pkgdir}/etc/mkinitcpio.d/${pkgbase}.preset"
+ 
+   # rather than use another hook (90-linux.hook) rely on mkinitcpio's 90-mkinitcpio-install.hook
+@@ -121,8 +136,7 @@
+ 
+ _package-headers() {
+   pkgdesc="Header files and scripts for building modules for linux kernel - ${_desc}"
+-  provides=("linux-headers=${pkgver}")
+-  conflicts=('linux-headers')
++
+ 
+   cd $_srcname
+   local builddir="$pkgdir/usr/lib/modules/$(<version)/build"
+@@ -238,7 +252,7 @@
+   cp vmlinux.kpart "${pkgdir}/boot"
+ }
+ 
+-pkgname=("${pkgbase}" "${pkgbase}-headers" "${pkgbase}-chromebook")
++pkgname=("${pkgbase}" "${pkgbase}-headers")
+ for _p in ${pkgname[@]}; do
+   eval "package_${_p}() {
+     _package${_p#${pkgbase}}

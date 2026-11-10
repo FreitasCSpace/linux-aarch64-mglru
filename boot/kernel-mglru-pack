@@ -1,0 +1,102 @@
+#!/bin/bash
+# Packs /boot/Image-mglru + /boot/initramfs-linux-mglru.img + the trogdor/herobrine
+# device trees into a FIT image, signs it with the vboot developer keys and writes
+# it to KERN-B (p3). Same recipe as omarchy-chromebook-kernel (which owns KERN-A),
+# except: the root is the mounted / (not "the partition after the kernel"), and
+# KERN-B is written as a TRIAL: priority 15, 1 try, not yet successful. If it does
+# not boot, depthcharge burns the try and falls back to KERN-A on the next boot.
+# `kernel-mglru-mark-good` (run by kernel-mglru-good.service once the desktop is up)
+# marks it successful and lowers KERN-A so the stock kernel stays the fallback.
+set -euo pipefail
+
+KERNEL=${1:-/boot/Image-mglru}
+INITRAMFS=${2:-/boot/initramfs-linux-mglru.img}
+DISK=/dev/mmcblk1
+PART=${DISK}p3
+CMDLINE_FILE=/etc/kernel/chromebook-cmdline
+DEVKEYS=/usr/share/vboot/devkeys
+DTB_DIR=/boot/dtbs/qcom
+DTB_OVERRIDE_DIR=/usr/share/omarchy-chromebook/dtbs
+
+[[ $(cgpt show -i 3 -l "$DISK") == KERN-B ]] || { echo "no KERN-B on $DISK (run setup-kernb.sh)" >&2; exit 1; }
+for f in "$KERNEL" "$INITRAMFS" "$DEVKEYS/kernel.keyblock" "$DEVKEYS/kernel_data_key.vbprivk"; do
+  [[ -f $f ]] || { echo "kernel-mglru-pack: missing $f" >&2; exit 1; }
+done
+
+dtbs=()
+for dtb in "$DTB_DIR"/sc7180-trogdor-*.dtb "$DTB_DIR"/sc7280-herobrine-*.dtb; do
+  [[ -f $DTB_OVERRIDE_DIR/${dtb##*/} ]] && dtb=$DTB_OVERRIDE_DIR/${dtb##*/}
+  [[ -f $dtb ]] && dtbs+=("$dtb")
+done
+((${#dtbs[@]})) || { echo "no Chromebook device trees under $DTB_DIR" >&2; exit 1; }
+
+root_uuid=$(findmnt -nvo UUID /)
+cmdline="root=UUID=$root_uuid"
+if [[ -f $CMDLINE_FILE ]]; then
+  cmdline+=" $(grep -v '^#' "$CMDLINE_FILE" | tr '\n' ' ' | sed 's/  */ /g; s/ $//')"
+else
+  cmdline+=" rootwait rw"
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+lz4 -q -9 -c "$KERNEL" >"$work/Image.lz4"
+{
+  echo '/dts-v1/;'
+  echo '/ {'
+  echo '  description = "Omarchy (MGLRU kernel)";'
+  echo '  #address-cells = <1>;'
+  echo '  images {'
+  echo '    kernel-1 {'
+  echo '      description = "Linux";'
+  echo "      data = /incbin/(\"$work/Image.lz4\");"
+  echo '      type = "kernel"; arch = "arm64"; os = "linux"; compression = "lz4";'
+  echo '      load = <0>; entry = <0>;'
+  echo '    };'
+  echo '    ramdisk-1 {'
+  echo '      description = "initramfs";'
+  echo "      data = /incbin/(\"$INITRAMFS\");"
+  echo '      type = "ramdisk"; arch = "arm64"; os = "linux"; compression = "none";'
+  echo '    };'
+  i=1
+  for dtb in "${dtbs[@]}"; do
+    echo "    fdt-$i {"
+    echo "      description = \"${dtb##*/}\";"
+    echo "      data = /incbin/(\"$dtb\");"
+    echo '      type = "flat_dt"; arch = "arm64"; compression = "none";'
+    echo '    };'
+    ((i++))
+  done
+  echo '  };'
+  echo '  configurations {'
+  echo '    default = "conf-1";'
+  i=1
+  for dtb in "${dtbs[@]}"; do
+    compatible=$(fdtget -t s "$dtb" / compatible | sed 's/ /", "/g')
+    echo "    conf-$i {"
+    echo "      compatible = \"$compatible\";"
+    echo '      kernel = "kernel-1"; ramdisk = "ramdisk-1";'
+    echo "      fdt = \"fdt-$i\";"
+    echo '    };'
+    ((i++))
+  done
+  echo '  };'
+  echo '};'
+} >"$work/k.its"
+mkimage -q -f "$work/k.its" "$work/k.itb"
+printf '%s\n' "$cmdline" >"$work/cmdline"
+head -c 512 /dev/zero >"$work/bootloader.bin"
+futility vbutil_kernel --pack "$work/k.kpart" --version 1 --arch aarch64 \
+  --vmlinuz "$work/k.itb" --keyblock "$DEVKEYS/kernel.keyblock" \
+  --signprivate "$DEVKEYS/kernel_data_key.vbprivk" --config "$work/cmdline" \
+  --bootloader "$work/bootloader.bin" >/dev/null
+
+size=$(stat -c %s "$work/k.kpart")
+(( size <= $(blockdev --getsize64 "$PART") )) || { echo "image ($size B) does not fit $PART" >&2; exit 1; }
+dd if="$work/k.kpart" of="$PART" bs=4M conv=fsync status=none
+
+# Trial boot: highest priority, one try, not successful yet.
+cgpt add -i 3 -S 0 -T 1 -P 15 "$DISK"
+# KERN-A stays bootable, below KERN-B.
+cgpt add -i 1 -P 10 "$DISK"
+echo "Wrote $((size / 1024 / 1024)) MiB MGLRU kernel to $PART as a one-try trial (KERN-A is the fallback)"
