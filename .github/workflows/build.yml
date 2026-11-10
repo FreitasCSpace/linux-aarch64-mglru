@@ -26,7 +26,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       build: ${{ steps.v.outputs.build }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: v
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,11 +51,13 @@ jobs:
     steps:
       - name: Toolchain
         run: |
+          # pacman's Landlock/alpm sandbox is not permitted inside the runner container
+          sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
           pacman-key --init
           pacman-key --populate archlinuxarm
           pacman -Syu --noconfirm --needed base-devel git patch xmlto docbook-xsl kmod inetutils bc \
             uboot-tools vboot-utils dtc python pahole cpio perl github-cli gnupg
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Sources
         run: |
           git config --global --add safe.directory "$PWD"
